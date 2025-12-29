@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 )
 
 const fileName = "messages.txt"
@@ -22,18 +23,35 @@ func main() {
 	fmt.Println("=====================================")
 
 	buffer := make([]byte, 8)
+	var lineBuilder strings.Builder
 
 	for {
 		n, err := f.Read(buffer)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				fmt.Println("end of file")
+				break
 			}
 			fmt.Printf("Error occured while reading file %s\n", err.Error())
 			break
 		}
 
-		fmt.Printf("read: %s\n", string(buffer[:n]))
+		str := string(buffer[:n])
+		parts := strings.Split(str, "\n")
+		if len(parts) == 1 {
+			lineBuilder.WriteString(parts[0])
+		} else if len(parts) > 1 {
+			for index, part := range parts {
+				lineBuilder.WriteString(part)
+				if index != len(parts)-1 {
+					fmt.Printf("read: %s\n", lineBuilder.String())
+					lineBuilder.Reset()
+				}
+			}
+		}
+	}
+
+	if lineBuilder.Len() > 0 {
+		fmt.Printf("read: %s\n", lineBuilder.String())
 	}
 
 }
