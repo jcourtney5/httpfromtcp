@@ -5,24 +5,34 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
+	"net"
 	"strings"
 )
 
-const fileName = "messages.txt"
+const port = ":42069"
 
 func main() {
-	f, err := os.Open(fileName)
+	listener, err := net.Listen("tcp", port)
 	if err != nil {
-		log.Fatalf("Failed to open file %s, %v\n", fileName, err)
+		log.Fatalf("Failed to set tcp listener on port %s, %v\n", port, err)
 	}
+	defer listener.Close()
+	log.Printf("Listening on port %s\n", port)
 
-	fmt.Printf("Reading data from %s\n", fileName)
-	fmt.Println("=====================================")
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Fatalf("Failed to accept connection %v\n", err)
+		}
+		defer conn.Close()
+		fmt.Println("Accepted new connection")
 
-	linesCh := getLinesChannel(f)
-	for line := range linesCh {
-		fmt.Println("read:", line)
+		linesCh := getLinesChannel(conn)
+		for line := range linesCh {
+			fmt.Println(line)
+		}
+
+		fmt.Println("connection has been closed")
 	}
 }
 
