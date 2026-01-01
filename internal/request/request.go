@@ -1,6 +1,7 @@
 package request
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 
 type Request struct {
 	RequestLine RequestLine
+	state       requestState
 }
 
 type RequestLine struct {
@@ -18,40 +20,73 @@ type RequestLine struct {
 	Method        string
 }
 
+type requestState int
+
+const (
+	requestStateInitialized requestState = iota // 0
+	requestStateDone                            // 1
+)
+
+const bufferSize = 8
+const crlf = "\r\n"
+
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	bytes, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, err
+	buf := make([]byte, bufferSize, bufferSize)
+	readToIndex := 0
+	request := &Request{
+		state: requestStateInitialized,
 	}
 
-	str := string(bytes)
+	for request.state != requestStateDone {
+		// check if we need to grow the buffer
+		if readToIndex >= len(buf) {
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf)
+			buf = newBuf
+		}
 
-	lines := strings.Split(str, "\r\n")
-	if len(lines) < 2 {
-		return nil, errors.New("invalid request")
+		bytesRead, err := reader.Read(buf[readToIndex:])
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				request.state = requestStateDone
+				break
+			}
+			return nil, err
+		}
+		readToIndex += bytesRead
+
+		bytesParsed, err := request.parse(buf[:readToIndex])
+		if err != nil {
+			return nil, err
+		}
+		if bytesParsed > 0 {
+			// remove parsed data from buf copying data left and decrementing readToIndex
+			copy(buf, buf[bytesParsed:])
+			readToIndex -= bytesParsed
+		}
 	}
 
-	requestLine, err := parseRequestLine(lines[0])
-	if err != nil {
-		return nil, err
-	}
-
-	return &Request{
-		RequestLine: *requestLine,
-	}, nil
+	return request, nil
 }
 
-func parseRequestLine(line string) (*RequestLine, error) {
-	parts := strings.Split(line, " ")
+func parseRequestLine(data []byte) (*RequestLine, int, error) {
+	idx := bytes.Index(data, []byte(crlf))
+	if idx == -1 {
+		return nil, 0, nil
+	}
+
+	requestLineText := string(data[:idx])
+
+	parts := strings.Split(requestLineText, " ")
 	if len(parts) != 3 {
-		return nil, fmt.Errorf("poorly formatted request-line: %s", line)
+		return nil, 0, fmt.Errorf("poorly formatted request-line: %s", requestLineText)
 	}
 
 	// get http method and validate that the method is all uppercase characters
 	method := parts[0]
 	for _, c := range method {
 		if !unicode.IsUpper(c) {
-			return nil, fmt.Errorf("invalid method: %s", method)
+			return nil, 0, fmt.Errorf("invalid method: %s", method)
 		}
 	}
 
@@ -61,20 +96,39 @@ func parseRequestLine(line string) (*RequestLine, error) {
 	// get http version and make sure it is "1.1"
 	httpVersionParts := strings.Split(parts[2], "/")
 	if len(httpVersionParts) != 2 {
-		return nil, fmt.Errorf("malformed start-line: %s", line)
+		return nil, 0, fmt.Errorf("malformed start-line: %s", requestLineText)
 	}
 	httpPart := httpVersionParts[0]
 	if httpPart != "HTTP" {
-		return nil, fmt.Errorf("unrecognized HTTP-version: %s", httpPart)
+		return nil, 0, fmt.Errorf("unrecognized HTTP-version: %s", httpPart)
 	}
 	version := httpVersionParts[1]
 	if version != "1.1" {
-		return nil, fmt.Errorf("unrecognized HTTP-version: %s", version)
+		return nil, 0, fmt.Errorf("unrecognized HTTP-version: %s", version)
 	}
 
 	return &RequestLine{
 		Method:        method,
 		RequestTarget: target,
 		HttpVersion:   version,
-	}, nil
+	}, idx + 2, nil
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	if r.state == requestStateInitialized {
+		requestLine, n, err := parseRequestLine(data)
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			return 0, nil // needs more data
+		}
+		r.RequestLine = *requestLine
+		r.state = requestStateDone
+		return n, nil
+	} else if r.state == requestStateDone {
+		return 0, fmt.Errorf("Can't parse in done state")
+	} else {
+		return 0, fmt.Errorf("Unknown state")
+	}
 }
