@@ -7,10 +7,13 @@ import (
 	"io"
 	"strings"
 	"unicode"
+
+	"github.com/jcourtney5/httpfromtcp/internal/headers"
 )
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     headers.Headers
 	state       requestState
 }
 
