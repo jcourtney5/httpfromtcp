@@ -26,8 +26,9 @@ type RequestLine struct {
 type requestState int
 
 const (
-	requestStateInitialized requestState = iota // 0
-	requestStateDone                            // 1
+	requestStateInitialized    = iota
+	requestStateParsingHeaders // 0
+	requestStateDone           // 1
 )
 
 const bufferSize = 8
@@ -37,7 +38,8 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	buf := make([]byte, bufferSize, bufferSize)
 	readToIndex := 0
 	request := &Request{
-		state: requestStateInitialized,
+		Headers: headers.NewHeaders(),
+		state:   requestStateInitialized,
 	}
 
 	for request.state != requestStateDone {
@@ -51,7 +53,9 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		bytesRead, err := reader.Read(buf[readToIndex:])
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				request.state = requestStateDone
+				if request.state != requestStateDone {
+					return nil, fmt.Errorf("incomplete request, in state: %d, read n bytes on EOF: %d", request.state, bytesRead)
+				}
 				break
 			}
 			return nil, err
@@ -118,7 +122,23 @@ func parseRequestLine(data []byte) (*RequestLine, int, error) {
 }
 
 func (r *Request) parse(data []byte) (int, error) {
-	if r.state == requestStateInitialized {
+	totalBytesParsed := 0
+	for r.state != requestStateDone {
+		n, err := r.parseSingle(data[totalBytesParsed:])
+		if err != nil {
+			return 0, err
+		}
+		totalBytesParsed += n
+		if n == 0 {
+			break // needs more data
+		}
+	}
+	return totalBytesParsed, nil
+}
+
+func (r *Request) parseSingle(data []byte) (int, error) {
+	switch r.state {
+	case requestStateInitialized:
 		requestLine, n, err := parseRequestLine(data)
 		if err != nil {
 			return 0, err
@@ -127,11 +147,20 @@ func (r *Request) parse(data []byte) (int, error) {
 			return 0, nil // needs more data
 		}
 		r.RequestLine = *requestLine
-		r.state = requestStateDone
+		r.state = requestStateParsingHeaders
 		return n, nil
-	} else if r.state == requestStateDone {
+	case requestStateParsingHeaders:
+		n, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return 0, err
+		}
+		if done {
+			r.state = requestStateDone
+		}
+		return n, nil
+	case requestStateDone:
 		return 0, fmt.Errorf("Can't parse in done state")
-	} else {
+	default:
 		return 0, fmt.Errorf("Unknown state")
 	}
 }
