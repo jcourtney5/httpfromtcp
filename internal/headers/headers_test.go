@@ -39,6 +39,16 @@ func TestRequestLineParse(t *testing.T) {
 	assert.Equal(t, 32, n)
 	assert.False(t, done)
 
+	// Test: Valid multiple headers with same key
+	headers = map[string]string{"accept-encoding": "gzip"}
+	data = []byte("Accept-Encoding: deflate\r\n\r\n")
+	n, done, err = headers.Parse(data)
+	require.NoError(t, err)
+	require.NotNil(t, headers)
+	assert.Equal(t, "gzip, deflate", headers["accept-encoding"])
+	assert.Equal(t, 26, n)
+	assert.False(t, done)
+
 	// Test: Valid done
 	headers = NewHeaders()
 	data = []byte("\r\n more data after")
