@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -12,9 +13,11 @@ import (
 )
 
 type Request struct {
-	RequestLine RequestLine
-	Headers     headers.Headers
-	state       requestState
+	RequestLine    RequestLine
+	Headers        headers.Headers
+	Body           []byte
+	state          requestState
+	bodyLengthRead int
 }
 
 type RequestLine struct {
@@ -26,9 +29,10 @@ type RequestLine struct {
 type requestState int
 
 const (
-	requestStateInitialized    = iota
-	requestStateParsingHeaders // 0
-	requestStateDone           // 1
+	requestStateInitialized = iota
+	requestStateParsingHeaders
+	requestStateParsingBody // 0
+	requestStateDone        // 1
 )
 
 const bufferSize = 8
@@ -39,6 +43,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	readToIndex := 0
 	request := &Request{
 		Headers: headers.NewHeaders(),
+		Body:    make([]byte, 0),
 		state:   requestStateInitialized,
 	}
 
@@ -155,9 +160,28 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 			return 0, err
 		}
 		if done {
-			r.state = requestStateDone
+			r.state = requestStateParsingBody
 		}
 		return n, nil
+	case requestStateParsingBody:
+		contentLengthStr, ok := r.Headers.Get("Content-Length")
+		if !ok {
+			r.state = requestStateDone
+			return len(data), nil
+		}
+		contentLength, err := strconv.Atoi(contentLengthStr)
+		if err != nil {
+			return 0, fmt.Errorf("malformed Content-Length: %s", err)
+		}
+		r.Body = append(r.Body, data...)
+		r.bodyLengthRead += len(data)
+		if r.bodyLengthRead > contentLength {
+			return 0, fmt.Errorf("Content-Length too large")
+		}
+		if r.bodyLengthRead == contentLength {
+			r.state = requestStateDone
+		}
+		return len(data), nil
 	case requestStateDone:
 		return 0, fmt.Errorf("Can't parse in done state")
 	default:
