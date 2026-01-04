@@ -1,20 +1,39 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync/atomic"
 
+	request "github.com/jcourtney5/httpfromtcp/internal/request"
 	"github.com/jcourtney5/httpfromtcp/internal/response"
 )
 
+type Handler func(w io.Writer, req *request.Request) *HandlerError
+
+type HandlerError struct {
+	StatusCode response.StatusCode
+	Message    string
+}
+
+func (he HandlerError) Write(w io.Writer) {
+	response.WriteStatusLine(w, he.StatusCode)
+	messageBytes := []byte(he.Message)
+	headers := response.GetDefaultHeaders(len(messageBytes))
+	response.WriteHeaders(w, headers)
+	w.Write(messageBytes)
+}
+
 type Server struct {
+	handler  Handler
 	listener net.Listener
 	closed   atomic.Bool
 }
 
-func Serve(port int) (*Server, error) {
+func Serve(port int, handler Handler) (*Server, error) {
 	address := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -22,6 +41,7 @@ func Serve(port int) (*Server, error) {
 	}
 
 	server := &Server{
+		handler:  handler,
 		listener: listener,
 	}
 
@@ -57,25 +77,55 @@ func (s *Server) listen() {
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
-	content := ""
-	statusCode := response.StatusCodeOK
+	req, err := request.RequestFromReader(conn)
+	if err != nil {
+		hErr := &HandlerError{
+			StatusCode: response.StatusCodeBadRequest,
+			Message:    err.Error(),
+		}
+		hErr.Write(conn)
+		return
+	}
+
+	buf := bytes.NewBuffer([]byte{})
+
+	hErr := s.handler(buf, req)
+	if hErr != nil {
+		hErr.Write(conn)
+		return
+	}
 
 	// write status line
-	err := response.WriteStatusLine(conn, statusCode)
+	err = response.WriteStatusLine(conn, response.StatusCodeOK)
 	if err != nil {
-		log.Printf("Failed to write status line: %v\n", err)
+		hErr := &HandlerError{
+			StatusCode: response.StatusCodeInternalServerError,
+			Message:    fmt.Sprintf("Failed to write status line: %v\n", err),
+		}
+		hErr.Write(conn)
+		return
 	}
 
 	// write headers
-	headers := response.GetDefaultHeaders(len(content))
+	headers := response.GetDefaultHeaders(buf.Len())
 	err = response.WriteHeaders(conn, headers)
 	if err != nil {
-		log.Printf("Failed to write headers %v\n", err)
+		hErr := &HandlerError{
+			StatusCode: response.StatusCodeInternalServerError,
+			Message:    fmt.Sprintf("Failed to write headers %v\n", err),
+		}
+		hErr.Write(conn)
+		return
 	}
 
 	// write content
-	_, err = conn.Write([]byte(content))
+	_, err = conn.Write(buf.Bytes())
 	if err != nil {
-		log.Printf("Failed to write content %v\n", err)
+		hErr := &HandlerError{
+			StatusCode: response.StatusCodeInternalServerError,
+			Message:    fmt.Sprintf("Failed to write content %v\n", err),
+		}
+		hErr.Write(conn)
+		return
 	}
 }
