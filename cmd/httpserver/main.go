@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -28,18 +27,44 @@ func main() {
 	log.Println("Server gracefully stopped")
 }
 
-func handlerTest(w io.Writer, req *request.Request) *server.HandlerError {
+func handlerTest(w *response.Writer, req *request.Request) {
 	if req.RequestLine.RequestTarget == "/yourproblem" {
-		return &server.HandlerError{
-			StatusCode: response.StatusCodeBadRequest,
-			Message:    "Your problem is not my problem\n",
-		}
+		handler400(w, req)
+		return
 	} else if req.RequestLine.RequestTarget == "/myproblem" {
-		return &server.HandlerError{
-			StatusCode: response.StatusCodeInternalServerError,
-			Message:    "Woopsie, my bad\n",
-		}
+		handler500(w, req)
+		return
 	}
-	w.Write([]byte("All good, frfr\n"))
-	return nil
+	handler200(w, req)
+	return
+}
+
+func handler400(w *response.Writer, _ *request.Request) {
+	body := "<html>\n  <head>\n    <title>400 Bad Request</title>\n  </head>\n  <body>\n    <h1>Bad Request</h1>\n    <p>Your request honestly kinda sucked.</p>\n  </body>\n</html>"
+	bodyBytes := []byte(body)
+	w.WriteStatusLine(response.StatusCodeBadRequest)
+	headers := response.GetDefaultHeaders(len(bodyBytes))
+	headers.Override("Content-Type", "text/html")
+	w.WriteHeaders(headers)
+	w.WriteBody(bodyBytes)
+}
+
+func handler500(w *response.Writer, _ *request.Request) {
+	body := "<html>\n  <head>\n    <title>500 Internal Server Error</title>\n  </head>\n  <body>\n    <h1>Internal Server Error</h1>\n    <p>Okay, you know what? This one is on me.</p>\n  </body>\n</html>"
+	bodyBytes := []byte(body)
+	w.WriteStatusLine(response.StatusCodeInternalServerError)
+	headers := response.GetDefaultHeaders(len(bodyBytes))
+	headers.Override("Content-Type", "text/html")
+	w.WriteHeaders(headers)
+	w.WriteBody(bodyBytes)
+}
+
+func handler200(w *response.Writer, req *request.Request) {
+	body := "<html>\n  <head>\n    <title>200 OK</title>\n  </head>\n  <body>\n    <h1>Success!</h1>\n    <p>Your request was an absolute banger.</p>\n  </body>\n</html>"
+	bodyBytes := []byte(body)
+	w.WriteStatusLine(response.StatusCodeOK)
+	headers := response.GetDefaultHeaders(len(bodyBytes))
+	headers.Override("Content-Type", "text/html")
+	w.WriteHeaders(headers)
+	w.WriteBody(bodyBytes)
 }

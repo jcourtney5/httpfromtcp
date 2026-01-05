@@ -1,9 +1,7 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync/atomic"
@@ -12,20 +10,7 @@ import (
 	"github.com/jcourtney5/httpfromtcp/internal/response"
 )
 
-type Handler func(w io.Writer, req *request.Request) *HandlerError
-
-type HandlerError struct {
-	StatusCode response.StatusCode
-	Message    string
-}
-
-func (he HandlerError) Write(w io.Writer) {
-	response.WriteStatusLine(w, he.StatusCode)
-	messageBytes := []byte(he.Message)
-	headers := response.GetDefaultHeaders(len(messageBytes))
-	response.WriteHeaders(w, headers)
-	w.Write(messageBytes)
-}
+type Handler func(w *response.Writer, req *request.Request)
 
 type Server struct {
 	handler  Handler
@@ -76,56 +61,14 @@ func (s *Server) listen() {
 
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
-
+	writer := response.NewWriter(conn)
 	req, err := request.RequestFromReader(conn)
 	if err != nil {
-		hErr := &HandlerError{
-			StatusCode: response.StatusCodeBadRequest,
-			Message:    err.Error(),
-		}
-		hErr.Write(conn)
+		writer.WriteStatusLine(response.StatusCodeBadRequest)
+		body := []byte(fmt.Sprintf("Error parsing request: %v", err))
+		writer.WriteHeaders(response.GetDefaultHeaders(len(body)))
+		writer.WriteBody(body)
 		return
 	}
-
-	buf := bytes.NewBuffer([]byte{})
-
-	hErr := s.handler(buf, req)
-	if hErr != nil {
-		hErr.Write(conn)
-		return
-	}
-
-	// write status line
-	err = response.WriteStatusLine(conn, response.StatusCodeOK)
-	if err != nil {
-		hErr := &HandlerError{
-			StatusCode: response.StatusCodeInternalServerError,
-			Message:    fmt.Sprintf("Failed to write status line: %v\n", err),
-		}
-		hErr.Write(conn)
-		return
-	}
-
-	// write headers
-	headers := response.GetDefaultHeaders(buf.Len())
-	err = response.WriteHeaders(conn, headers)
-	if err != nil {
-		hErr := &HandlerError{
-			StatusCode: response.StatusCodeInternalServerError,
-			Message:    fmt.Sprintf("Failed to write headers %v\n", err),
-		}
-		hErr.Write(conn)
-		return
-	}
-
-	// write content
-	_, err = conn.Write(buf.Bytes())
-	if err != nil {
-		hErr := &HandlerError{
-			StatusCode: response.StatusCodeInternalServerError,
-			Message:    fmt.Sprintf("Failed to write content %v\n", err),
-		}
-		hErr.Write(conn)
-		return
-	}
+	s.handler(writer, req)
 }
