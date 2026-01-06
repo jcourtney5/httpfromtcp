@@ -1,9 +1,13 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jcourtney5/httpfromtcp/internal/request"
@@ -28,10 +32,15 @@ func main() {
 }
 
 func handlerTest(w *response.Writer, req *request.Request) {
+	if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin") {
+		handlerHttpBin(w, req)
+		return
+	}
 	if req.RequestLine.RequestTarget == "/yourproblem" {
 		handler400(w, req)
 		return
-	} else if req.RequestLine.RequestTarget == "/myproblem" {
+	}
+	if req.RequestLine.RequestTarget == "/myproblem" {
 		handler500(w, req)
 		return
 	}
@@ -59,7 +68,7 @@ func handler500(w *response.Writer, _ *request.Request) {
 	w.WriteBody(bodyBytes)
 }
 
-func handler200(w *response.Writer, req *request.Request) {
+func handler200(w *response.Writer, _ *request.Request) {
 	body := "<html>\n  <head>\n    <title>200 OK</title>\n  </head>\n  <body>\n    <h1>Success!</h1>\n    <p>Your request was an absolute banger.</p>\n  </body>\n</html>"
 	bodyBytes := []byte(body)
 	w.WriteStatusLine(response.StatusCodeOK)
@@ -67,4 +76,46 @@ func handler200(w *response.Writer, req *request.Request) {
 	headers.Override("Content-Type", "text/html")
 	w.WriteHeaders(headers)
 	w.WriteBody(bodyBytes)
+}
+
+func handlerHttpBin(w *response.Writer, req *request.Request) {
+	target := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin/")
+	url := fmt.Sprintf("https://httpbin.org/%s", target)
+	resp, err := http.Get(url)
+	if err != nil {
+		handler500(w, req)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.WriteStatusLine(response.StatusCodeOK)
+	headers := response.GetDefaultHeaders(0)
+	headers.Remove("Content-Type")
+	headers.Override("Transfer-Encoding", "chunked")
+	w.WriteHeaders(headers)
+
+	buf := make([]byte, 1024)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			fmt.Printf("Read %d bytes (chunk received)\n", n)
+			_, err = w.WriteChunkedBody(buf[:n])
+			if err != nil {
+				fmt.Println("Error writing chunked body:", err)
+				break
+			}
+		}
+		if err != nil {
+			// io.EOF indicates the end of the stream
+			if err == io.EOF {
+				break
+			}
+			fmt.Println("Error reading response body:", err)
+			break
+		}
+	}
+	_, err = w.WriteChunkedBodyDone()
+	if err != nil {
+		fmt.Println("Error writing chunked body done:", err)
+	}
 }
