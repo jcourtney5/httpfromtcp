@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jcourtney5/httpfromtcp/internal/headers"
 	"github.com/jcourtney5/httpfromtcp/internal/request"
 	"github.com/jcourtney5/httpfromtcp/internal/response"
 	"github.com/jcourtney5/httpfromtcp/internal/server"
@@ -89,10 +91,13 @@ func handlerHttpBin(w *response.Writer, req *request.Request) {
 	defer resp.Body.Close()
 
 	w.WriteStatusLine(response.StatusCodeOK)
-	headers := response.GetDefaultHeaders(0)
-	headers.Remove("Content-Type")
-	headers.Override("Transfer-Encoding", "chunked")
-	w.WriteHeaders(headers)
+	h := response.GetDefaultHeaders(0)
+	h.Remove("Content-Type")
+	h.Override("Transfer-Encoding", "chunked")
+	h.Override("Trailer", "X-Content-SHA256, X-Content-Length")
+	w.WriteHeaders(h)
+
+	fullBody := make([]byte, 0)
 
 	buf := make([]byte, 1024)
 	for {
@@ -104,6 +109,7 @@ func handlerHttpBin(w *response.Writer, req *request.Request) {
 				fmt.Println("Error writing chunked body:", err)
 				break
 			}
+			fullBody = append(fullBody, buf[:n]...)
 		}
 		if err != nil {
 			// io.EOF indicates the end of the stream
@@ -114,8 +120,19 @@ func handlerHttpBin(w *response.Writer, req *request.Request) {
 			break
 		}
 	}
+
 	_, err = w.WriteChunkedBodyDone()
 	if err != nil {
 		fmt.Println("Error writing chunked body done:", err)
 	}
+
+	trailers := headers.NewHeaders()
+	hash := sha256.Sum256(fullBody)
+	trailers.Override("X-Content-SHA256", fmt.Sprintf("%x", hash))
+	trailers.Override("X-Content-Length", fmt.Sprintf("%d", len(fullBody)))
+	err = w.WriteTrailers(trailers)
+	if err != nil {
+		fmt.Println("Error writing trailers:", err)
+	}
+	fmt.Println("Wrote Trailers")
 }
